@@ -27,9 +27,15 @@ let corePromise: Promise<CoreModule> | null = null;
 function loadCore(): Promise<CoreModule> {
   if (!corePromise) {
     corePromise = (async () => {
-      const base = import.meta.env.BASE_URL;
-      const glueUrl = `${base}wasm/minimapprint_core.js`;
-      const wasmUrl = `${base}wasm/minimapprint_core_bg.wasm`;
+      // Resolve against the page URL, not the importing module: the
+      // bundled script lives under assets/, so a module-relative
+      // "./wasm/..." would miss the site-root wasm/ directory.
+      const glueUrl = new URL("wasm/minimapprint_core.js", document.baseURI)
+        .href;
+      const wasmUrl = new URL(
+        "wasm/minimapprint_core_bg.wasm",
+        document.baseURI,
+      ).href;
       const mod = (await import(/* @vite-ignore */ glueUrl)) as {
         default: (input: string) => Promise<unknown>;
       } & CoreModule;
