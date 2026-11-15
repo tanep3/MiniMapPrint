@@ -9,11 +9,13 @@ export interface Way {
   geometry: Array<{ lat: number; lon: number }>;
 }
 
-// Order measured 2026-11-15 with the Shinjuku 2 km query (~3.9 MB):
-// overpass-api.de answered in ~29 s; overpass.private.coffee (the
-// pocket-map skill's first choice) did not answer at all within 180 s,
-// which cost the app its 45 s timeout before the fallback even started.
-// The main instance goes first; private.coffee stays as fallback.
+// The endpoints are RACED (see fetchWays): measured 2026-11-15, the
+// Shinjuku 2 km query took ~29 s on overpass-api.de while
+// overpass.private.coffee did not answer at all within 180 s. With a
+// sequential fallback, a hung endpoint costs the full timeout before
+// the healthy one is even asked; racing makes the total wait the
+// fastest endpoint's time. The loser is aborted immediately, which
+// also stops its server-side work in the usual case.
 const ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
@@ -28,46 +30,70 @@ export async function fetchWays(vp: Viewport): Promise<Way[]> {
     `way["waterway"](${bb});way["natural"="water"](${bb});` +
     `way["leisure"="park"](${bb}););out geom;`;
 
-  // Patience matters more than failover speed here: measured 2026-11-15,
-  // overpass-api.de needed ~30 s even for a 1 km / 408-element query
-  // (server-side queueing), and the previous 45 s cap could abort a
-  // request that was about to succeed. The card shows elapsed seconds
-  // while waiting.
-  const errors: string[] = [];
-  for (const endpoint of ENDPOINTS) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 130_000);
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ data: query }),
-        signal: ctrl.signal,
-      });
-      if (res.status === 406 || res.status === 429) {
-        throw new RateLimitedError(`overpass ${res.status}`);
-      }
-      if (!res.ok) {
-        errors.push(`${endpoint}: HTTP ${res.status}`);
-        continue;
-      }
-      const data = (await res.json()) as {
-        elements?: Array<{
-          type: string;
-          tags?: Record<string, string>;
-          geometry?: Array<{ lat: number; lon: number }>;
-        }>;
-      };
-      const ways: Way[] = (data.elements ?? [])
-        .filter((e) => e.type === "way" && e.geometry && e.geometry.length >= 2)
-        .map((e) => ({ tags: e.tags ?? {}, geometry: e.geometry! }));
-      return ways;
-    } catch (e) {
-      if (e instanceof RateLimitedError) throw e;
-      errors.push(`${endpoint}: ${String(e)}`);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw new Error(`overpass failed: ${errors.join("; ")}`);
+  // Race all endpoints in parallel; the first full response wins and
+  // the losers are aborted. A rate-limit response (406/429) does not
+  // win: the other endpoint may still answer. Patience per endpoint
+  // stays generous (measured 2026-11-15: overpass-api.de needed ~30 s
+  // even for a 1 km / 408-element query due to server-side queueing),
+  // and the card shows elapsed seconds while waiting.
+  return new Promise<Way[]>((resolve, reject) => {
+    let settled = false;
+    let failures = 0;
+    let rateLimited = false;
+    const errors: string[] = [];
+    const controllers = ENDPOINTS.map(() => new AbortController());
+    const timers = controllers.map((c) =>
+      setTimeout(() => c.abort(), 130_000),
+    );
+    const cleanup = () => timers.forEach((tm) => clearTimeout(tm));
+
+    ENDPOINTS.forEach((endpoint, i) => {
+      (async () => {
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ data: query }),
+            signal: controllers[i].signal,
+          });
+          if (res.status === 406 || res.status === 429) {
+            rateLimited = true;
+            throw new Error(`rate limited (${res.status})`);
+          }
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = (await res.json()) as {
+            elements?: Array<{
+              type: string;
+              tags?: Record<string, string>;
+              geometry?: Array<{ lat: number; lon: number }>;
+            }>;
+          };
+          const ways: Way[] = (data.elements ?? [])
+            .filter(
+              (e) => e.type === "way" && e.geometry && e.geometry.length >= 2,
+            )
+            .map((e) => ({ tags: e.tags ?? {}, geometry: e.geometry! }));
+          if (settled) return;
+          settled = true;
+          cleanup();
+          controllers.forEach((c, j) => {
+            if (j !== i) c.abort();
+          });
+          resolve(ways);
+        } catch (e) {
+          if (settled) return; // loser aborted after the winner finished
+          errors.push(`${endpoint}: ${String(e)}`);
+          failures += 1;
+          if (failures === ENDPOINTS.length) {
+            cleanup();
+            if (rateLimited) {
+              reject(new RateLimitedError(errors.join("; ")));
+            } else {
+              reject(new Error(`overpass failed: ${errors.join("; ")}`));
+            }
+          }
+        }
+      })();
+    });
+  });
 }
