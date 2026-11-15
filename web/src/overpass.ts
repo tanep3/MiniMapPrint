@@ -1,5 +1,6 @@
 // Vector data (roads, railways, water, parks) via Overpass API.
-// Query and endpoint fallback order are ported from the pocket-map skill.
+// The query is ported from the pocket-map skill; the endpoint order is
+// not (see ENDPOINTS below).
 
 import type { Viewport } from "./viewport";
 
@@ -8,9 +9,14 @@ export interface Way {
   geometry: Array<{ lat: number; lon: number }>;
 }
 
+// Order measured 2026-11-15 with the Shinjuku 2 km query (~3.9 MB):
+// overpass-api.de answered in ~29 s; overpass.private.coffee (the
+// pocket-map skill's first choice) did not answer at all within 180 s,
+// which cost the app its 45 s timeout before the fallback even started.
+// The main instance goes first; private.coffee stays as fallback.
 const ENDPOINTS = [
-  "https://overpass.private.coffee/api/interpreter",
   "https://overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
 ];
 
 export class RateLimitedError extends Error {}
