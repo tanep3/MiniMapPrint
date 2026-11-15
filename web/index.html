@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>MiniMapPrint</title>
+    <meta name="description" content="行きたい場所の地図を、感熱プリンタで刷れる小さな一枚に。" />
+    <meta name="theme-color" content="#ff7eb6" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="hero">
+        <div class="hero-top">
+          <h1 class="logo">
+            <svg class="logo-pin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z" fill="#ff5c9e"/></svg>
+            MiniMapPrint
+          </h1>
+          <button id="lang-toggle" class="lang-toggle" type="button">EN</button>
+        </div>
+        <p class="tagline" data-i18n="tagline">行きたい場所の地図を、感熱プリンタで刷れる小さな一枚に。</p>
+      </header>
+
+      <main>
+        <section id="input-card" class="card">
+          <label class="field">
+            <span data-i18n="place1">場所 1</span>
+            <input id="place1" type="text" data-i18n-ph="place1Ph" placeholder="例: 新宿駅" autocomplete="off" />
+          </label>
+          <div id="candidates1" class="candidates" hidden></div>
+
+          <label class="field">
+            <span data-i18n="place2">場所 2（任意）</span>
+            <input id="place2" type="text" data-i18n-ph="place2Ph" placeholder="例: 東京都庁" autocomplete="off" />
+          </label>
+          <div id="candidates2" class="candidates" hidden></div>
+
+          <div class="field">
+            <span data-i18n="scale">範囲（地図の一辺）</span>
+            <input id="scale" type="range" min="0" max="5" step="1" value="1" />
+            <div class="scale-labels" id="scale-labels"></div>
+            <div class="scale-value" id="scale-value">1 km</div>
+          </div>
+
+          <div class="field">
+            <span data-i18n="printer">プリンタ</span>
+            <div class="segmented" id="printer">
+              <label><input type="radio" name="printer" value="200" checked /><span data-i18n="dpi200">200dpi（T02等）</span></label>
+              <label><input type="radio" name="printer" value="300" /><span data-i18n="dpi300">300dpi（M02S等）</span></label>
+            </div>
+          </div>
+
+          <button id="generate" class="generate" type="button" data-i18n="generate">地図をつくる</button>
+          <p id="notice" class="notice" hidden></p>
+          <p id="error" class="error" hidden></p>
+        </section>
+
+        <section id="result" hidden>
+          <div class="result-head">
+            <h2 data-i18n="resultTitle">できあがり</h2>
+            <p id="expanded-note" class="notice" hidden></p>
+          </div>
+          <div id="result-cards"></div>
+        </section>
+      </main>
+
+      <footer>
+        <p>© OpenStreetMap contributors / ODbL · <span data-i18n="footerNote">地図データは OpenStreetMap を使っています</span></p>
+        <p>MiniMapPrint v<span id="version"></span> · MIT License · <a href="https://github.com/tanep3/MiniMapPrint" target="_blank" rel="noopener">GitHub</a></p>
+      </footer>
+    </div>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-inner">
+        <img id="modal-img" alt="" />
+        <div class="modal-actions">
+          <button id="modal-share" type="button" data-i18n="share">共有</button>
+          <button id="modal-save" type="button" data-i18n="save">保存</button>
+          <button id="modal-print" type="button" data-i18n="print">印刷</button>
+          <button id="modal-close" type="button" data-i18n="close">閉じる</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="print-area" aria-hidden="true"><img id="print-img" alt="" /></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
