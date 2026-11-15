@@ -24,14 +24,19 @@ export class RateLimitedError extends Error {}
 export async function fetchWays(vp: Viewport): Promise<Way[]> {
   const bb = `${vp.south.toFixed(6)},${vp.west.toFixed(6)},${vp.north.toFixed(6)},${vp.east.toFixed(6)}`;
   const query =
-    `[out:json][timeout:40];(way["highway"](${bb});way["railway"](${bb});` +
+    `[out:json][timeout:120];(way["highway"](${bb});way["railway"](${bb});` +
     `way["waterway"](${bb});way["natural"="water"](${bb});` +
     `way["leisure"="park"](${bb}););out geom;`;
 
+  // Patience matters more than failover speed here: measured 2026-11-15,
+  // overpass-api.de needed ~30 s even for a 1 km / 408-element query
+  // (server-side queueing), and the previous 45 s cap could abort a
+  // request that was about to succeed. The card shows elapsed seconds
+  // while waiting.
   const errors: string[] = [];
   for (const endpoint of ENDPOINTS) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 45_000);
+    const timer = setTimeout(() => ctrl.abort(), 130_000);
     try {
       const res = await fetch(endpoint, {
         method: "POST",

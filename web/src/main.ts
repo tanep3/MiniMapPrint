@@ -129,14 +129,28 @@ function makeCard(style: "line" | "gray"): {
   const body = document.createElement("div");
   card.appendChild(body);
 
+  let pendingTimer: number | undefined;
+  const stopTimer = () => {
+    if (pendingTimer !== undefined) {
+      clearInterval(pendingTimer);
+      pendingTimer = undefined;
+    }
+  };
   const setPending = () => {
+    stopTimer();
     body.innerHTML = "";
     const d = document.createElement("div");
     d.className = "pending";
+    const started = Date.now();
     d.textContent = t("generating");
+    pendingTimer = window.setInterval(() => {
+      const sec = Math.floor((Date.now() - started) / 1000);
+      d.textContent = `${t("generating")} (${sec}s)`;
+    }, 1000);
     body.appendChild(d);
   };
   const setFailed = (retry: () => void) => {
+    stopTimer();
     body.innerHTML = "";
     const d = document.createElement("div");
     d.className = "failed";
@@ -151,6 +165,7 @@ function makeCard(style: "line" | "gray"): {
     body.appendChild(d);
   };
   const setDone = (canvas: HTMLCanvasElement) => {
+    stopTimer();
     body.innerHTML = "";
     const img = document.createElement("img");
     img.className = "map";
