@@ -9,7 +9,7 @@ import {
   type Place,
   type Viewport,
 } from "./viewport";
-import { fetchWays } from "./overpass";
+import { fetchLineWays } from "./linedata";
 import { fetchMosaic } from "./tiles";
 import { renderLine } from "./render_line";
 import { renderGray } from "./render_gray";
@@ -196,7 +196,7 @@ function makeCard(style: "line" | "gray"): {
 async function runLine(ctx: RunContext, card: ReturnType<typeof makeCard>) {
   card.setPending();
   try {
-    const ways = await fetchWays(ctx.vp);
+    const ways = await fetchLineWays(ctx.vp);
     const base = renderLine(ways, ctx.vp, ctx.box.w, ctx.box.h, ctx.s);
     const pins = ctx.places.map(
       (p) =>

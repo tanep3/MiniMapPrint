@@ -10,7 +10,7 @@
     ↓
 geocode (Nominatim) → viewport 決定（メートル基準の正方形、2点は自動拡張＋通知）
     ↓ 並行
-├─ 線画: Overpass でベクタ取得 → Canvas 2D で描画
+├─ 線画: ベクタタイルからベクタ抽出（予備: Overpass）→ Canvas 2D で描画
 └─ グレー: OSM タイルをモザイク → WASM (pic2gray4px) で 1 ビット変換
     ↓ 両スタイル共通
 compose: タイトル / ピン / 凡例 / スケールバー / 北矢印 / 帰属 を変換後に重ねる
@@ -75,11 +75,21 @@ auto の探索（完成画像を採点して contrast / unsharp を選ぶ）は 
   - 2点: 両点を含む最小の正方形 ＋ 各辺 12.5% マージン（現スキル）。それが scaleKm を超えたら、スナップ段（0.5/1/2/3/4/5km）のうち収まる最小の段まで広げ、`expandedToKm` にその段を入れる。5km でも不足なら実寸を使い `expandedToKm` に実寸を入れる
 - 緯度で経度幅を補正する（1km の経度換算は cos(lat) で変わる）。投影は Web Mercator
 
-### `overpass.ts` — ベクタ取得
+### `vectiles.ts` — ベクタタイル抽出（線画の主データソース、v0.2.0〜）
+- `fetchWaysFromTiles(vp: Viewport): Promise<Way[]>` — Overpass と同じ `Way` 形で返す
+- Versatiles（Shortbread スキーマ）のタイルを bbox 分だけ取得（最大ズーム14、最大16枚、超えたらズームを下げる）し、ブラウザ内で MVT をデコードして必要な地物だけを抜く。CDN 配信のため Overpass のようなサーバ側生成待ちが無い（2026-11-15 実測: 新宿2km で約2.4秒、Overpass は同条件で約30秒）
+- レイヤー対応: `streets`（kind＋link フラグ → highway タグ、rail 系 kind → railway）、`water_lines` → waterway、`water_polygons` → natural=water、`land` の kind=park → leisure=park、`street_polygons` → highway=pedestrian（輪郭）
+- ジオメトリはタイルズームで一般化済みのものを使う（割り切り。トレードオフは requirements の v0.2.0 追記参照）。タイル境界で分割された線はそのまま描く（描画結果は等価）
+- 1枚でも取得失敗（404 の空タイルを除く）または抽出結果ゼロなら例外を投げ、`linedata.ts` が Overpass にフォールバックする
+
+### `linedata.ts` — 線画データソースの選択
+- `fetchLineWays(vp)` — ベクタタイルを試し、失敗したら `overpass.ts` にフォールバックする。あくまで線画スタイル内部のデータソース切替であり、スタイル自体が黙って変わることはない
+
+### `overpass.ts` — ベクタ取得（予備データソース）
 - `fetchWays(vp: Viewport): Promise<Way[]>` — `Way = { tags: Record<string,string>, geometry: {lat, lon}[] }`
-- クエリは現スキルと同一: `[out:json][timeout:40];(way["highway"](bbox);way["railway"](bbox);way["waterway"](bbox);way["natural"="water"](bbox);way["leisure"="park"](bbox););out geom;`
+- クエリは現スキルと同一の対象（highway / railway / waterway / natural=water / leisure=park の way、`out geom;`）。サーバ側タイムアウトは120秒
 - POST は `application/x-www-form-urlencoded`（プリフライト回避）
-- エンドポイントは現スキルと同じ順でフォールバック: `overpass.private.coffee` → `overpass-api.de`。429 / タイムアウトは次へ、全滅ならエラー表示
+- エンドポイント（overpass-api.de / overpass.private.coffee）へ**並行リクエストして最速の応答を採用**する（2026-11-15 採用。片方が無応答でも待ちが最速側で決まる）。敗者は即 abort、429/406 は勝ちにしない。各エンドポイントの上限は130秒、全滅ならエラー表示
 
 ### `tiles.ts` — タイル取得とモザイク
 - `planTiles(vp, outW, outH): { zoom, tiles: {x, y}[] }`

@@ -12,7 +12,8 @@ MiniMapPrint 本体のライセンスは MIT License（`LICENSE`）です。
 - 利用しているサービス（いずれも各利用ポリシーの範囲内で、要求された範囲だけを取得します。一括取得・プリフェッチはしません）:
   - 標準タイルレイヤー（tile.openstreetmap.org）— Tile Usage Policy
   - Nominatim（地名解決）— Nominatim Usage Policy
-  - Overpass API（道路等のベクタ取得）
+  - Versatiles ベクタタイル（tiles.versatiles.org、Shortbread スキーマ）— 線画の主データソース（v0.2.0〜）。データは OSM 由来で ODbL
+  - Overpass API（道路等のベクタ取得）— ベクタタイルが使えない場合の予備
 
 ## pic2gray4px（変換コアの原典）
 
@@ -29,6 +30,13 @@ MiniMapPrint 本体のライセンスは MIT License（`LICENSE`）です。
 | wasm-bindgen | 0.2.x | MIT OR Apache-2.0 |
 
 ビルドツール（wasm-pack、Vite、TypeScript）は成果物に含まれません
+
+## JavaScript ライブラリ（Web アプリの依存）
+
+| ライブラリ | バージョン | ライセンス | 用途 |
+|---|---|---|---|
+| @mapbox/vector-tile | 3.0.0 | BSD-3-Clause | ベクタタイル（MVT）のデコード |
+| pbf | 3.3.0 | BSD-3-Clause | Protocol Buffers の読み取り（vector-tile の依存） |
 
 ## フォント
 
