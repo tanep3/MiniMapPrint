@@ -23,8 +23,8 @@ compose: タイトル / ピン / 凡例 / スケールバー / 北矢印 / 帰�
 ```
 MiniMapPrint/
 ├─ core/            Rust: pic2gray4px のライブラリ部を WASM 化（wasm-pack）
-├─ web/             TypeScript アプリ本体（Vite なし、素の TS + esbuild 相当の簡素ビルド ※Voice2QR 方式）
-│  ├─ src/          モジュール群（下記 §3）
+├─ web/             TypeScript アプリ本体
+│  ├─ src/          モジュール群（下記 §3）。ビルドは Vite + TypeScript（Voice2QR 方式）
 │  ├─ public/       manifest / sw.js / version.json の雛形、アイコン
 │  └─ package.json  appVersion を保持（タグと一致させる）
 ├─ docs/            requirements.md / design.md / maintenance.md（リリース手順）
