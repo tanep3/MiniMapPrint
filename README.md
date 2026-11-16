@@ -14,6 +14,8 @@
 
 ## 使い方
 
+**▶ https://tanep3.github.io/MiniMapPrint/**
+
 ブラウザで開いて、場所を入れて、地図を作る。それだけです。インストールもアカウントも不要です。
 
 地図データは OpenStreetMap を使っています（© OpenStreetMap contributors / ODbL）。
