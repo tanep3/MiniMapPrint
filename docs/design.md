@@ -39,7 +39,7 @@ MiniMapPrint/
 1. Nominatim で2件を解決（候補が割れたら候補リストを出してユーザーが選ぶ）
 2. 2点の距離から必要範囲を計算 → 2点間は約0.85km で、マージンを含めると 1km の段には収まらないため、2km の段に広げて「2点が収まる 2km に広げました」と表示する。5km でも収まらない場合は実寸で広げ、実寸（例 7.2km）を通知する
 3. 線画: bbox を Overpass に投げ（highway / railway / waterway / natural=water / leisure=park の way、`out geom;`）、道路種別ごとの線幅で描く
-4. グレー: ズームは「ネイティブズーム最近傍」規則で決める（この例では z15、タイル約9枚 ≤ 上限16）。モザイクを出力サイズにリサンプルし、WASM で auto 調整つき変換
+4. グレー: ズームは「ネイティブズーム最近傍」規則で決める（この例では z15、タイル約9枚 ≤ 上限16）。モザイクを出力サイズにリサンプルし、WASM で変換（イラストモード＋赤寄りミキサー＋トーンカーブ normal、unsharp 0.5 固定、contrast は auto）
 5. 両方にタイトル「新宿駅 → 東京都庁」、番号ピン、凡例、スケールバー（0.5km）、北矢印、帰属を重ねて表示
 6. ユーザーが線画をタップ → クローズアップ → 共有シートから Phomemo アプリへ
 
@@ -58,6 +58,16 @@ pic2gray4px の `convert_with_options` が土台。ファイル入出力（`load
 | 注意 | 2×2 セルの都合で出力寸法は偶数に切り上がる。呼び出し側が元の寸法に切り戻す（現スキルのアダプタと同じ扱い） |
 
 auto の探索（完成画像を採点して contrast / unsharp を選ぶ）は autotune.rs / optimizer.rs がそのまま担う。アプリ側は「auto で呼ぶ」だけ。
+
+### `convert_rgba_adjusted(rgba, width, height, options) -> result`（v0.3.0 同期で追加）
+
+pic2gray4px の WASM API と同じ表面。グレー版はこちらを使う。
+
+| 項目 | 内容 |
+|---|---|
+| options | `targetWidth: number \| null`（null = リサイズなし）、`contrast: number \| null`（null = auto）、`unsharp: number \| null`（null = auto）、`passes: number`、`diffusion: boolean`、`mixerPresetName: string \| null`（standard / warm / green）、`mixerWeights: number[] \| null`（プリセットと同時指定はエラー）、`toneCurveName: string \| null`（normal / contrast / lift-blacks）、`localContrast: number \| null`、`modeName: string \| null`（photo / illustration）、`exchangeRounds: number \| null`（モードと同時指定はエラー） |
+| モード解決 | photo = 拡散あり＋交換3、illustration = 拡散なし＋交換3。モード指定時は `diffusion` 引数は無視される。交換は候補探索の勝者にだけ適用される |
+| 戻り値 | convert_rgba と同じ形に `diffusionUsed: boolean`、`exchangeUsed: number` を加えたもの |
 
 ## 3. Web アプリのモジュール
 
@@ -108,8 +118,8 @@ auto の探索（完成画像を採点して contrast / unsharp を選ぶ）は 
   - 線幅は出力幅に比例させる（M02S では ×1.5）
 
 ### `render_gray.ts` — グレー版
-- `renderGray(mosaic: ImageData): Promise<{ bits, width, height, contrastUsed, unsharpUsed }>`
-- WASM の `convert_rgba` を auto（contrast/unsharp とも null）で呼ぶだけ。使われた実効値を返すのは、将来の手動調整 UI とデバッグのため
+- `renderGray(mosaic): Promise<{ canvas, contrastUsed, unsharpUsed }>`
+- WASM の `convert_rgba_adjusted` をグレー版レシピで呼ぶ：イラストモード（拡散なし＋交換3）＋ミキサー warm＋トーンカーブ normal、unsharp は 0.5 固定、contrast は auto（null）。使われた実効値を返すのは、将来の手動調整 UI とデバッグのため
 
 ### `compose.ts` — 仕上げ合成（両スタイル共通、変換の後に描く）
 - `compose(base: CanvasImageSource, places, vp, outW, outH, title: string): HTMLCanvasElement`

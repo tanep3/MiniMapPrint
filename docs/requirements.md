@@ -24,8 +24,10 @@
   - 帰属表示「© OpenStreetMap contributors」は ODbL のライセンス条件として必須
 
 ### pic2gray4px
-- 変換器は Rust の pic2gray4px を**丸ごと WASM 化**して使う（lib.rs + autotune.rs + optimizer.rs）
+- 変換器は Rust の pic2gray4px を**丸ごと WASM 化**して使う（lib.rs + adjust.rs + autotune.rs + optimizer.rs）。コアは pic2gray4px v0.3.0 に同期済み（2026-11-17）
 - **自動調整（contrast / unsharp の auto）も初期版から含める**。WASM 移植では自動調整は変換器と一体で付いてくるため、追加実装として数えない
+- グレー版の変換レシピ（2026-11-17 の地図比較で確定）：**イラストモード（拡散なし＋セル間交換）＋赤寄りミキサー＋トーンカーブ normal、unsharp は 0.5 固定、contrast は auto**
+  - 根拠：入間市駅・猿島の 1km 地図（300dpi）で現行コアと比較し、新ロジックの方が道路・緑地・水面の分離が読みやすかった。unsharp の auto は元絵の微差で 0.25／0.5 を往復したため、再現性を優先して固定する（contrast の auto は全サンプルで 1.0 を選んだため据え置き）
 - ブラウザ側は Canvas から生ピクセルを WASM に渡す。Rust 側に画像デコーダは持たない
 
 ### 出力サイズ

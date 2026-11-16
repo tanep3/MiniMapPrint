@@ -1,23 +1,35 @@
 // Gray-style conversion via the pic2gray4px WASM core.
-// The mosaic canvas is already at the exact output size, so the core is
-// called with auto preprocessing (contrast / unsharp = null) and the
-// packed 1-bit result is unpacked onto a canvas.
+// The mosaic canvas is already at the exact output size. Conversion uses
+// the illustration mode (no diffusion + inter-cell exchange), the warm
+// channel mixer and the normal tone curve — the combination that read
+// best on real maps — with unsharp fixed at 0.5 (the auto search
+// flip-flopped between 0.25 and 0.5 on near-identical mosaics; contrast
+// stays on auto). The packed 1-bit result is unpacked onto a canvas.
 
 interface CoreModule {
-  convert_rgba: (
+  convert_rgba_adjusted: (
     rgba: Uint8Array,
     width: number,
     height: number,
+    targetWidth: number | null,
     contrast: number | null,
     unsharp: number | null,
     passes: number,
     diffusion: boolean,
+    mixerPresetName: string | null,
+    mixerWeights: number[] | null,
+    toneCurveName: string | null,
+    localContrast: number | null,
+    modeName: string | null,
+    exchangeRounds: number | null,
   ) => {
     bits: Uint8Array;
     width: number;
     height: number;
     contrast_used: number;
     unsharp_used: number;
+    diffusion_used: boolean;
+    exchange_used: number;
     free: () => void;
   };
 }
@@ -58,14 +70,21 @@ export async function renderGray(mosaic: HTMLCanvasElement): Promise<GrayResult>
   const h = mosaic.height;
   const ctx = mosaic.getContext("2d")!;
   const imageData = ctx.getImageData(0, 0, w, h);
-  const result = core.convert_rgba(
+  const result = core.convert_rgba_adjusted(
     new Uint8Array(imageData.data.buffer),
     w,
     h,
-    null,
-    null,
-    10,
-    true,
+    null, // target width: the mosaic is already at the output size
+    null, // contrast: auto search
+    0.5, // unsharp: fixed
+    10, // passes
+    true, // diffusion argument: ignored, the mode preset decides
+    "warm", // channel mixer preset
+    null, // mixer weights (the preset supplies them)
+    "normal", // tone curve
+    null, // local contrast: off
+    "illustration", // mode: no diffusion + exchange
+    null, // exchange rounds (the mode preset supplies them)
   );
   try {
     const outW = result.width;

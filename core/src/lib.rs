@@ -1,15 +1,55 @@
-//! 2×2 neighborhood gray, represented by real black and white pixels.
+//! 2x2 neighborhood gray, represented by real black and white pixels.
 //!
 //! MiniMapPrint core: the pic2gray4px library (by the same author, MIT),
 //! ported to take RGBA pixel buffers directly so it can run as WebAssembly
 //! in the browser. File loading and PNG writing live on the caller side.
+//!
+//! Synced with pic2gray4px v0.3.0: channel mixers, tone curves and local
+//! contrast (adjust.rs), inter-cell white-dot exchange in the optimizer,
+//! and the photo / illustration mode presets. With default options the
+//! output is identical to the previous port.
 
+mod adjust;
 mod autotune;
 mod optimizer;
 
+pub use adjust::{mixer_preset, ToneCurve, MIXER_PRESETS, STANDARD_MIXER};
+
+/// A named conversion mode: a bundle of the diffusion and exchange
+/// settings that suit a class of input. Modes are resolved by the core
+/// so the CLI, the Web app, and library callers share one definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModePreset {
+    /// Cell white-count diffusion on/off.
+    pub diffusion: bool,
+    /// Inter-cell white-dot exchange rounds.
+    pub exchange: usize,
+}
+
+/// Exchange rounds applied by both named modes. Measured on the
+/// comparison set: round 2 captures most of the gain and round 3 a
+/// small consistent tail; the judged comparison sheets used 3.
+pub const MODE_EXCHANGE_ROUNDS: usize = 3;
+
+/// Resolve a mode name ("photo" / "illustration") to its settings.
+/// - photo: diffusion on + exchange — smooth tonal gradation wins.
+/// - illustration: diffusion off + exchange — flat areas stay clean.
+pub fn mode_preset(name: &str) -> Option<ModePreset> {
+    match name {
+        "photo" => Some(ModePreset {
+            diffusion: true,
+            exchange: MODE_EXCHANGE_ROUNDS,
+        }),
+        "illustration" => Some(ModePreset {
+            diffusion: false,
+            exchange: MODE_EXCHANGE_ROUNDS,
+        }),
+        _ => None,
+    }
+}
+
 use image::{imageops, RgbaImage};
 use std::error::Error;
-
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Clone, Copy, Debug)]
@@ -22,6 +62,19 @@ pub struct ConversionOptions {
     pub unsharp: Option<f32>,
     /// Diffuse cell white-count rounding residuals to neighboring cells.
     pub diffusion: bool,
+    /// Inter-cell white-dot exchange rounds (0 disables). Adjacent cells
+    /// may trade one white dot — the pair's total is preserved — when the
+    /// joint placement lowers the perceptual cost. Applied once, to the
+    /// winning candidate only, after the contrast/unsharp search.
+    pub exchange: usize,
+    /// Channel mixer weights for the color-to-gray stage.
+    /// None selects the standard preset (omission means the standard
+    /// preset, unlike contrast/unsharp where omission means search).
+    pub mixer: Option<(f32, f32, f32)>,
+    /// Tone curve for the mixed gray plane.
+    pub tone_curve: ToneCurve,
+    /// Local contrast amount 0..1; 0.0 skips the stage entirely.
+    pub local_contrast: f32,
 }
 
 pub struct ConversionResult {
@@ -30,6 +83,14 @@ pub struct ConversionResult {
     pub pixels: Vec<u8>,
     pub contrast: f32,
     pub unsharp: f32,
+    /// Mixer weights actually applied.
+    pub mixer: (f32, f32, f32),
+    /// Tone curve actually applied.
+    pub tone_curve: ToneCurve,
+    /// Local contrast amount actually applied.
+    pub local_contrast: f32,
+    /// Exchange rounds actually applied.
+    pub exchange: usize,
 }
 
 impl Default for ConversionOptions {
@@ -40,8 +101,29 @@ impl Default for ConversionOptions {
             contrast: None,
             unsharp: None,
             diffusion: true,
+            exchange: 0,
+            mixer: None,
+            tone_curve: ToneCurve::Normal,
+            local_contrast: 0.0,
         }
     }
+}
+
+/// Convert with optional proportional resizing. The output dimensions are rounded up to even.
+pub fn convert(
+    image: &RgbaImage,
+    width: Option<u32>,
+    passes: usize,
+) -> Result<(u32, u32, Vec<u8>)> {
+    let result = convert_with_options(
+        image,
+        ConversionOptions {
+            width,
+            passes,
+            ..ConversionOptions::default()
+        },
+    )?;
+    Ok((result.width, result.height, result.pixels))
 }
 
 pub fn convert_with_options(
@@ -54,12 +136,27 @@ pub fn convert_with_options(
         contrast,
         unsharp,
         diffusion,
+        exchange,
+        mixer,
+        tone_curve,
+        local_contrast,
     } = options;
     if contrast.is_some_and(|v| !(0.0..=3.0).contains(&v) || !v.is_finite()) {
         return Err("contrast must be between 0 and 3".into());
     }
     if unsharp.is_some_and(|v| !(0.0..=2.0).contains(&v) || !v.is_finite()) {
         return Err("unsharp must be between 0 and 2".into());
+    }
+    if let Some(weights) = mixer {
+        if [weights.0, weights.1, weights.2]
+            .iter()
+            .any(|v| !v.is_finite() || !(-2.0..=2.0).contains(v))
+        {
+            return Err("mixer weights must be finite numbers between -2 and 2".into());
+        }
+    }
+    if !local_contrast.is_finite() || !(0.0..=1.0).contains(&local_contrast) {
+        return Err("local contrast must be between 0 and 1".into());
     }
     if passes > 10 {
         return Err("passes must be between 0 and 10".into());
@@ -88,11 +185,21 @@ pub fn convert_with_options(
     let len = (out_w as usize)
         .checked_mul(out_h as usize)
         .ok_or("image is too large")?;
-    let mut target = vec![1.0_f32; len];
-    fill_luminance(&rgba, out_w, &mut target);
     let valid_w = rgba.width() as usize;
     let valid_h = rgba.height() as usize;
     let stride = out_w as usize;
+    let mut target = vec![1.0_f32; len];
+    let mixer_weights = mixer.unwrap_or(STANDARD_MIXER);
+    fill_mixed(&rgba, out_w, &mut target, mixer_weights);
+    // Color adjustment front-end. The adjusted plane becomes the
+    // reference for everything downstream (tonal check, candidate
+    // search, scoring); the Rec.709 luminance is never reused.
+    if tone_curve != ToneCurve::Normal {
+        adjust::apply_tone_curve(&mut target, stride, valid_w, valid_h, tone_curve);
+    }
+    if local_contrast != 0.0 {
+        adjust::apply_local_contrast(&mut target, stride, valid_w, valid_h, local_contrast);
+    }
     let mut eligible = Vec::new();
     for y in 0..valid_h {
         for x in 0..valid_w {
@@ -101,6 +208,9 @@ pub fn convert_with_options(
             }
         }
     }
+    // The RGBA plane is not read again (the candidate search works on the
+    // luminance plane only); release it before the search's peak.
+    drop(rgba);
     let tonal = has_tonal_range(&target, &eligible);
     let contrasts: Vec<f32> = match contrast {
         Some(v) => vec![v],
@@ -131,14 +241,19 @@ pub fn convert_with_options(
                     continue;
                 }
             }
+            // The candidate search always runs without exchange: scores
+            // stay comparable across candidates, and the exchange stage
+            // (which improves every candidate in the same direction) is
+            // applied once, to the winner only, below.
             let result = optimizer::optimize(
-                &trial.iter().map(|&v| v as f64).collect::<Vec<_>>(),
+                &trial,
                 out_w as usize,
                 out_h as usize,
                 valid_w,
                 valid_h,
                 passes,
                 diffusion,
+                0,
             );
             let score = if contrast.is_none() || unsharp.is_none() {
                 autotune::score(
@@ -161,13 +276,62 @@ pub fn convert_with_options(
         }
     }
     let (_, contrast, unsharp, pixels) = best.expect("unadjusted candidate must be available");
+    let pixels = if exchange > 0 {
+        // Rebuild the winning candidate's plane (preprocessing is
+        // deterministic) and re-run its optimization with exchange.
+        let mut contrasted = target.clone();
+        preprocess(&mut contrasted, stride, valid_w, valid_h, contrast, 0.0);
+        let mut trial = contrasted;
+        preprocess(&mut trial, stride, valid_w, valid_h, 1.0, unsharp);
+        optimizer::optimize(
+            &trial,
+            out_w as usize,
+            out_h as usize,
+            valid_w,
+            valid_h,
+            passes,
+            diffusion,
+            exchange,
+        )
+        .pixels
+    } else {
+        pixels
+    };
     Ok(ConversionResult {
         width: out_w,
         height: out_h,
         pixels,
         contrast,
         unsharp,
+        mixer: mixer_weights,
+        tone_curve,
+        local_contrast,
+        exchange,
     })
+}
+
+/// Convert raw RGBA bytes (as delivered by a browser canvas or a WASM caller)
+/// through the same pipeline as [`convert_with_options`]. For identical RGBA
+/// input the result is identical to the image entry point.
+pub fn convert_rgba(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    options: ConversionOptions,
+) -> Result<ConversionResult> {
+    if width == 0 || height == 0 {
+        return Err("input image has no pixels".into());
+    }
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("image is too large")?;
+    if rgba.len() != expected {
+        return Err("RGBA buffer length must equal width*height*4".into());
+    }
+    let image = RgbaImage::from_raw(width, height, rgba.to_vec())
+        .ok_or("RGBA buffer length must equal width*height*4")?;
+    convert_with_options(&image, options)
 }
 
 fn stats(baseline: &[f32], trial: &[f32], eligible: &[usize]) -> (f32, f32) {
@@ -239,13 +403,25 @@ fn preprocess(
 
 const UNSHARP_KERNEL: [[f32; 3]; 3] = [[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]];
 
+/// Standard-weights fill, kept for the existing tests.
+#[cfg(test)]
 fn fill_luminance(rgba: &RgbaImage, stride: u32, target: &mut [f32]) {
+    fill_mixed(rgba, stride, target, STANDARD_MIXER);
+}
+
+fn fill_mixed(rgba: &RgbaImage, stride: u32, target: &mut [f32], weights: (f32, f32, f32)) {
+    let (wr, wg, wb) = weights;
     for y in 0..rgba.height() {
         for x in 0..rgba.width() {
             let p = rgba.get_pixel(x, y).0;
             let alpha = p[3] as f32 / 255.0;
+            // Keep the operation shape identical to the original
+            // Rec.709 expression so the standard weights reproduce the
+            // previous results bit for bit. The clamp is a no-op for
+            // the standard weights (their range is exactly [0, 1]) and
+            // only bounds custom weights.
             let luminance =
-                (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0;
+                ((wr * p[0] as f32 + wg * p[1] as f32 + wb * p[2] as f32) / 255.0).clamp(0.0, 1.0);
             target[(y * stride + x) as usize] = luminance * alpha + 1.0 - alpha;
         }
     }
@@ -254,8 +430,7 @@ fn fill_luminance(rgba: &RgbaImage, stride: u32, target: &mut [f32]) {
 /// Optimize an already normalized, even-size gray image without count diffusion.
 /// This compatibility helper keeps the previous f32 API.
 pub fn optimize(target: &[f32], w: usize, h: usize, passes: usize) -> Vec<u8> {
-    let target: Vec<f64> = target.iter().map(|&v| v as f64).collect();
-    optimizer::optimize(&target, w, h, w, h, passes, false).pixels
+    optimizer::optimize(target, w, h, w, h, passes, false, 0).pixels
 }
 
 /// Run the VM experiment optimizer on exact gray8 bytes, without preprocessing or resizing.
@@ -274,7 +449,7 @@ pub fn optimize_gray8(
         return Err("gray8 input needs positive even dimensions and width*height bytes".into());
     }
     let target: Vec<f64> = raw.iter().map(|&v| v as f64 / 255.0).collect();
-    let result = optimizer::optimize(&target, w, h, w, h, 10, diffusion);
+    let result = optimizer::optimize_f64(&target, w, h, w, h, 10, diffusion, 0);
     Ok((result.pixels, result.changes))
 }
 
@@ -305,14 +480,14 @@ mod tests {
     #[test]
     fn transparent_pixels_become_white_and_odd_edges_are_padded() {
         let image = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 0]).unwrap();
-        let r = convert_with_options(&image, ConversionOptions { passes: 8, ..ConversionOptions::default() }).unwrap();
-        let (w, h, pixels) = (r.width, r.height, r.pixels);
+        let (w, h, pixels) = convert(&image, None, 8).unwrap();
         assert_eq!((w, h), (2, 2));
         assert_eq!(pixels, vec![1; 4]);
 
-        let image = RgbaImage::from_raw(3, 1, vec![0, 0, 0, 255, 127, 127, 127, 255, 0, 0, 0, 255]).unwrap();
-        let r = convert_with_options(&image, ConversionOptions { passes: 8, ..ConversionOptions::default() }).unwrap();
-        let (w, h, pixels) = (r.width, r.height, r.pixels);
+        let image =
+            RgbaImage::from_raw(3, 1, vec![0, 0, 0, 255, 127, 127, 127, 255, 0, 0, 0, 255])
+                .unwrap();
+        let (w, h, pixels) = convert(&image, None, 8).unwrap();
         assert_eq!((w, h), (4, 2));
         assert_eq!(pixels[3], 1); // right padding
         assert!(pixels[4..].iter().all(|&p| p == 1)); // bottom padding
@@ -445,6 +620,220 @@ mod tests {
                 < (old_white as isize - target as isize).abs()
         );
     }
+
+    #[test]
+    fn rgba_entry_point_matches_image_path() {
+        // Gradient + dark block + fully and semi-transparent pixels, odd size.
+        let image = RgbaImage::from_fn(25, 17, |x, y| {
+            if x >= 20 && y < 4 {
+                image::Rgba([10, 10, 10, 0])
+            } else if x >= 20 {
+                image::Rgba([200, 180, 160, 100])
+            } else if (6..12).contains(&x) && (4..10).contains(&y) {
+                image::Rgba([30, 30, 30, 255])
+            } else {
+                let gray = (30 + x * 7 + y * 3) as u8;
+                image::Rgba([gray, gray, gray, 255])
+            }
+        });
+        let raw = image.as_raw().clone();
+        let dynamic = image;
+        for options in [
+            ConversionOptions::default(),
+            ConversionOptions {
+                width: Some(16),
+                contrast: Some(1.0),
+                unsharp: Some(0.0),
+                ..ConversionOptions::default()
+            },
+        ] {
+            let via_rgba = convert_rgba(&raw, 25, 17, options).unwrap();
+            let via_image = convert_with_options(&dynamic, options).unwrap();
+            assert_eq!(via_rgba.width, via_image.width);
+            assert_eq!(via_rgba.height, via_image.height);
+            assert_eq!(via_rgba.pixels, via_image.pixels);
+            assert_eq!(via_rgba.contrast, via_image.contrast);
+            assert_eq!(via_rgba.unsharp, via_image.unsharp);
+        }
+    }
+
+    #[test]
+    fn rgba_entry_point_rejects_wrong_length() {
+        assert!(convert_rgba(&[0; 10], 4, 4, ConversionOptions::default()).is_err());
+        assert!(convert_rgba(&[], 0, 4, ConversionOptions::default()).is_err());
+    }
+
+    fn colorful_test_image() -> RgbaImage {
+        RgbaImage::from_fn(32, 24, |x, y| {
+            if x < 10 {
+                image::Rgba([200, (40 + y * 8) as u8, 30, 255]) // warm gradient
+            } else if x < 20 {
+                image::Rgba([40, (120 + x * 4) as u8, 50, 255]) // green gradient
+            } else {
+                let v = (60 + x * 5 + y * 4) as u8;
+                image::Rgba([v, v, v, 255]) // gray ramp
+            }
+        })
+    }
+
+    #[test]
+    fn adjustment_defaults_report_standard_and_match_explicit_standard() {
+        let image = colorful_test_image();
+        let defaulted = convert_with_options(&image, ConversionOptions::default()).unwrap();
+        assert_eq!(defaulted.mixer, STANDARD_MIXER);
+        assert_eq!(defaulted.tone_curve, ToneCurve::Normal);
+        assert_eq!(defaulted.local_contrast, 0.0);
+        let explicit = convert_with_options(
+            &image,
+            ConversionOptions {
+                mixer: Some(STANDARD_MIXER),
+                tone_curve: ToneCurve::Normal,
+                local_contrast: 0.0,
+                ..ConversionOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(defaulted.pixels, explicit.pixels);
+    }
+
+    #[test]
+    fn mixer_preserves_neutral_grays() {
+        // R = G = B everywhere: every sum-to-1 mixer must agree with
+        // the standard conversion exactly.
+        let image = RgbaImage::from_fn(32, 16, |x, y| {
+            let v = (30 + x * 6 + y * 3) as u8;
+            image::Rgba([v, v, v, 255])
+        });
+        let fixed = ConversionOptions {
+            contrast: Some(1.0),
+            unsharp: Some(0.0),
+            ..ConversionOptions::default()
+        };
+        let standard = convert_with_options(&image, fixed).unwrap();
+        for name in ["warm", "green"] {
+            let mixed = convert_with_options(
+                &image,
+                ConversionOptions {
+                    mixer: mixer_preset(name),
+                    ..fixed
+                },
+            )
+            .unwrap();
+            assert_eq!(mixed.pixels, standard.pixels, "{name}");
+        }
+    }
+
+    #[test]
+    fn mixer_output_is_clamped_to_unit_range() {
+        let red = RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).unwrap();
+        let mut target = vec![0.0; 1];
+        fill_mixed(&red, 1, &mut target, (2.0, -1.0, 0.0));
+        assert_eq!(target[0], 1.0);
+        fill_mixed(&red, 1, &mut target, (-1.0, 0.0, 0.0));
+        assert_eq!(target[0], 0.0);
+    }
+
+    #[test]
+    fn adjustment_options_are_validated() {
+        let image = colorful_test_image();
+        for options in [
+            ConversionOptions {
+                mixer: Some((2.5, 0.0, 0.0)),
+                ..ConversionOptions::default()
+            },
+            ConversionOptions {
+                mixer: Some((f32::NAN, 0.0, 0.0)),
+                ..ConversionOptions::default()
+            },
+            ConversionOptions {
+                local_contrast: 1.5,
+                ..ConversionOptions::default()
+            },
+            ConversionOptions {
+                local_contrast: -0.1,
+                ..ConversionOptions::default()
+            },
+        ] {
+            assert!(convert_with_options(&image, options).is_err());
+        }
+    }
+
+    #[test]
+    fn tone_curve_and_local_contrast_change_the_output() {
+        let image = colorful_test_image();
+        let fixed = ConversionOptions {
+            contrast: Some(1.0),
+            unsharp: Some(0.0),
+            ..ConversionOptions::default()
+        };
+        let plain = convert_with_options(&image, fixed).unwrap();
+        let lifted = convert_with_options(
+            &image,
+            ConversionOptions {
+                tone_curve: ToneCurve::LiftBlacks,
+                ..fixed
+            },
+        )
+        .unwrap();
+        assert_ne!(lifted.pixels, plain.pixels);
+        assert_eq!(lifted.tone_curve, ToneCurve::LiftBlacks);
+        let local = convert_with_options(
+            &image,
+            ConversionOptions {
+                local_contrast: 0.8,
+                ..fixed
+            },
+        )
+        .unwrap();
+        assert_ne!(local.pixels, plain.pixels);
+        assert_eq!(local.local_contrast, 0.8);
+    }
+
+    #[test]
+    fn exchange_preserves_white_total_and_changes_pixels() {
+        // A smooth gradient: neighbouring cells have room to trade dots.
+        let (w, h) = (96u32, 64u32);
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for _y in 0..h {
+            for x in 0..w {
+                let v = ((x * 255) / (w - 1)) as u8;
+                rgba.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let image = RgbaImage::from_raw(w, h, rgba).unwrap();
+        let base = ConversionOptions {
+            width: Some(w),
+            contrast: Some(1.0),
+            unsharp: Some(0.0),
+            ..ConversionOptions::default()
+        };
+        let plain = convert_with_options(&image, base).unwrap();
+        let exchanged = convert_with_options(
+            &image,
+            ConversionOptions {
+                exchange: 3,
+                ..base
+            },
+        )
+        .unwrap();
+        assert_eq!(exchanged.exchange, 3);
+        // Every exchange preserves its pair's total, hence the global one.
+        let total = |p: &[u8]| p.iter().map(|&v| v as u64).sum::<u64>();
+        assert_eq!(total(&plain.pixels), total(&exchanged.pixels));
+        assert_ne!(plain.pixels, exchanged.pixels);
+    }
+
+    #[test]
+    fn mode_presets_resolve() {
+        let photo = mode_preset("photo").unwrap();
+        assert!(photo.diffusion);
+        assert_eq!(photo.exchange, MODE_EXCHANGE_ROUNDS);
+        let illustration = mode_preset("illustration").unwrap();
+        assert!(!illustration.diffusion);
+        assert_eq!(illustration.exchange, MODE_EXCHANGE_ROUNDS);
+        assert!(mode_preset("bogus").is_none());
+    }
+
 }
 
 /// Pack 0/1 pixels (1 = white) into bits, MSB first, one row after another.
@@ -467,8 +856,9 @@ mod wasm {
     use super::*;
     use wasm_bindgen::prelude::*;
 
-    /// Result of `convert_rgba`: the packed 1-bit image plus the
-    /// preprocessing amounts that were actually used (after auto search).
+    /// Result of `convert_rgba` / `convert_rgba_adjusted`: the packed
+    /// 1-bit image plus the settings that were actually used (after any
+    /// auto search and mode resolution).
     #[wasm_bindgen]
     pub struct PackedConvertResult {
         bits: Vec<u8>,
@@ -476,6 +866,8 @@ mod wasm {
         height: u32,
         contrast_used: f32,
         unsharp_used: f32,
+        diffusion_used: bool,
+        exchange_used: usize,
     }
 
     #[wasm_bindgen]
@@ -499,6 +891,29 @@ mod wasm {
         #[wasm_bindgen(getter)]
         pub fn unsharp_used(&self) -> f32 {
             self.unsharp_used
+        }
+        #[wasm_bindgen(getter)]
+        pub fn diffusion_used(&self) -> bool {
+            self.diffusion_used
+        }
+        #[wasm_bindgen(getter)]
+        pub fn exchange_used(&self) -> usize {
+            self.exchange_used
+        }
+    }
+
+    fn pack_result(
+        result: ConversionResult,
+        diffusion_used: bool,
+    ) -> PackedConvertResult {
+        PackedConvertResult {
+            bits: pack_bits(&result.pixels, result.width, result.height),
+            width: result.width,
+            height: result.height,
+            contrast_used: result.contrast,
+            unsharp_used: result.unsharp,
+            diffusion_used,
+            exchange_used: result.exchange,
         }
     }
 
@@ -525,16 +940,90 @@ mod wasm {
                 contrast,
                 unsharp,
                 diffusion,
+                ..ConversionOptions::default()
             },
         )
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(PackedConvertResult {
-            bits: pack_bits(&result.pixels, result.width, result.height),
-            width: result.width,
-            height: result.height,
-            contrast_used: result.contrast,
-            unsharp_used: result.unsharp,
-        })
+        Ok(pack_result(result, diffusion))
+    }
+
+    /// Full-surface conversion: optional resize, channel mixer (preset
+    /// name or explicit weights), tone curve, local contrast, and the
+    /// named mode presets — the same surface as pic2gray4px's WASM API.
+    /// `mode_name` and `exchange_rounds` cannot be combined; with a mode,
+    /// the `diffusion` argument is ignored.
+    #[wasm_bindgen]
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_rgba_adjusted(
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        target_width: Option<u32>,
+        contrast: Option<f32>,
+        unsharp: Option<f32>,
+        passes: usize,
+        diffusion: bool,
+        mixer_preset_name: Option<String>,
+        mixer_weights: Option<Vec<f32>>,
+        tone_curve_name: Option<String>,
+        local_contrast: Option<f32>,
+        mode_name: Option<String>,
+        exchange_rounds: Option<u32>,
+    ) -> std::result::Result<PackedConvertResult, JsValue> {
+        if mixer_preset_name.is_some() && mixer_weights.is_some() {
+            return Err(JsValue::from_str(
+                "mixer_preset_name and mixer_weights cannot be combined",
+            ));
+        }
+        if mode_name.is_some() && exchange_rounds.is_some() {
+            return Err(JsValue::from_str(
+                "mode_name and exchange_rounds cannot be combined",
+            ));
+        }
+        let (diffusion, exchange) = match mode_name {
+            Some(name) => {
+                let preset = mode_preset(&name)
+                    .ok_or_else(|| JsValue::from_str(&format!("unknown mode: {name}")))?;
+                (preset.diffusion, preset.exchange)
+            }
+            None => (diffusion, exchange_rounds.unwrap_or(0) as usize),
+        };
+        let mixer = match (mixer_preset_name, mixer_weights) {
+            (Some(name), _) => Some(
+                mixer_preset(&name)
+                    .ok_or_else(|| JsValue::from_str(&format!("unknown mixer preset: {name}")))?,
+            ),
+            (_, Some(weights)) => {
+                if weights.len() != 3 {
+                    return Err(JsValue::from_str("mixer_weights must have exactly 3 values"));
+                }
+                Some((weights[0], weights[1], weights[2]))
+            }
+            (None, None) => None,
+        };
+        let tone_curve = match tone_curve_name {
+            Some(name) => ToneCurve::from_name(&name)
+                .ok_or_else(|| JsValue::from_str(&format!("unknown tone curve: {name}")))?,
+            None => ToneCurve::Normal,
+        };
+        let image = RgbaImage::from_raw(width, height, rgba.to_vec())
+            .ok_or_else(|| JsValue::from_str("rgba buffer does not match width*height*4"))?;
+        let result = convert_with_options(
+            &image,
+            ConversionOptions {
+                width: target_width,
+                passes,
+                contrast,
+                unsharp,
+                diffusion,
+                exchange,
+                mixer,
+                tone_curve,
+                local_contrast: local_contrast.unwrap_or(0.0),
+            },
+        )
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(pack_result(result, diffusion))
     }
 }
 
