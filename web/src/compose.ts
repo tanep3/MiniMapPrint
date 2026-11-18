@@ -96,9 +96,14 @@ export function compose(
     ctx.fillStyle = fill;
     ctx.fill();
   };
+  // With manual framing (v0.4.0 preview) a place can fall outside the
+  // printed box; such pins are not drawn (the title still names them).
+  const inBox = (x: number, y: number) =>
+    x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
   if (
     abs.length === 2 &&
-    Math.hypot(abs[0][0] - abs[1][0], abs[0][1] - abs[1][1]) < 30 * s
+    Math.hypot(abs[0][0] - abs[1][0], abs[0][1] - abs[1][1]) < 30 * s &&
+    inBox((abs[0][0] + abs[1][0]) / 2, (abs[0][1] + abs[1][1]) / 2)
   ) {
     const x = (abs[0][0] + abs[1][0]) / 2;
     const y = (abs[0][1] + abs[1][1]) / 2;
@@ -108,6 +113,7 @@ export function compose(
     haloText("1+2", x + 12 * s, y - 11 * s, 16 * s);
   } else {
     abs.forEach(([x, y], i) => {
+      if (!inBox(x, y)) return;
       circle(x, y, 12 * s, "#ffffff");
       if (i === 1) {
         ctx.fillStyle = "#000000";

@@ -5,10 +5,13 @@ import {
   computeViewport,
   projectLinear,
   projectMercator,
+  viewportAround,
+  viewportCenter,
   SNAP_KM,
   type Place,
   type Viewport,
 } from "./viewport";
+import { Preview, type Framing } from "./preview";
 import { fetchLineWays } from "./linedata";
 import { fetchMosaic } from "./tiles";
 import { renderLine } from "./render_line";
@@ -37,6 +40,8 @@ interface RunContext {
   box: MapBox;
 }
 let lastRun: RunContext | null = null;
+let lastPlaces: Place[] = [];
+let preview: Preview | null = null;
 let modalCanvas: HTMLCanvasElement | null = null;
 let modalName = "minimapprint.png";
 
@@ -249,23 +254,69 @@ async function runGray(ctx: RunContext, card: ReturnType<typeof makeCard>) {
   }
 }
 
+async function renderOutputs(places: Place[], vp: Viewport): Promise<void> {
+  const printer =
+    document.querySelector<HTMLInputElement>('input[name="printer"]:checked')
+      ?.value ?? "200";
+  const outW = printer === "300" ? 576 : 384;
+  const outH = printer === "300" ? 768 : 512;
+  const s = outW / 384;
+  const box = mapBox(places.length, s);
+  const ctx: RunContext = { places, vp, outW, outH, s, box };
+  lastRun = ctx;
+  lastPlaces = places;
+
+  const note = $("expanded-note");
+  if (vp.expandedToKm !== null) {
+    const km =
+      vp.expandedToKm % 1 === 0
+        ? String(vp.expandedToKm)
+        : vp.expandedToKm.toFixed(1);
+    note.textContent = t("expanded", { km });
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+
+  const resultSection = $("result");
+  resultSection.hidden = false;
+  const cards = $("result-cards");
+  cards.innerHTML = "";
+  const lineCard = makeCard("line");
+  const grayCard = makeCard("gray");
+  cards.appendChild(lineCard.card);
+  cards.appendChild(grayCard.card);
+  await Promise.allSettled([runLine(ctx, lineCard), runGray(ctx, grayCard)]);
+}
+
+/** Show the original-map preview at the fitted framing of a viewport. */
+function showPreview(places: Place[], vp: Viewport): void {
+  if (!preview) return;
+  const c = viewportCenter(vp);
+  const framing: Framing = { lat: c.lat, lon: c.lon, scaleKm: vp.actualKm };
+  $("preview-section").hidden = false;
+  void preview.show(framing, places);
+}
+
 async function generate(): Promise<void> {
   showError(null);
   const btn = $<HTMLButtonElement>("generate");
   const q1 = $<HTMLInputElement>("place1").value.trim();
-  if (!q1) {
+  if (!q1 && !fields[1].place) {
     showError(t("needPlace"));
     return;
   }
   btn.disabled = true;
   btn.textContent = t("generating");
   try {
-    const r1 = await resolveField(1);
-    if (r1 === "notfound") {
-      showError(t("notFound", { q: q1 }));
-      return;
+    if (q1) {
+      const r1 = await resolveField(1);
+      if (r1 === "notfound") {
+        showError(t("notFound", { q: q1 }));
+        return;
+      }
+      if (r1 === "pending") return;
     }
-    if (r1 === "pending") return;
     const q2 = $<HTMLInputElement>("place2").value.trim();
     if (q2) {
       const r2 = await resolveField(2);
@@ -288,42 +339,53 @@ async function generate(): Promise<void> {
       return;
     }
 
-    const printer =
-      document.querySelector<HTMLInputElement>('input[name="printer"]:checked')
-        ?.value ?? "200";
-    const outW = printer === "300" ? 576 : 384;
-    const outH = printer === "300" ? 768 : 512;
-    const s = outW / 384;
-    const box = mapBox(places.length, s);
-    const ctx: RunContext = { places, vp, outW, outH, s, box };
-    lastRun = ctx;
-
-    const note = $("expanded-note");
-    if (vp.expandedToKm !== null) {
-      const km =
-        vp.expandedToKm % 1 === 0
-          ? String(vp.expandedToKm)
-          : vp.expandedToKm.toFixed(1);
-      note.textContent = t("expanded", { km });
-      note.hidden = false;
-    } else {
-      note.hidden = true;
-    }
-
-    const resultSection = $("result");
-    resultSection.hidden = false;
-    const cards = $("result-cards");
-    cards.innerHTML = "";
-    const lineCard = makeCard("line");
-    const grayCard = makeCard("gray");
-    cards.appendChild(lineCard.card);
-    cards.appendChild(grayCard.card);
-    resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
-    await Promise.allSettled([runLine(ctx, lineCard), runGray(ctx, grayCard)]);
+    showPreview(places, vp);
+    $("preview-section").scrollIntoView({ behavior: "smooth", block: "start" });
+    await renderOutputs(places, vp);
   } finally {
     btn.disabled = false;
     btn.textContent = t("generate");
   }
+}
+
+/** Render from the preview's manually adjusted framing. */
+async function renderFramed(): Promise<void> {
+  const framing = preview?.getFraming();
+  if (!framing || lastPlaces.length === 0) return;
+  showError(null);
+  const vp = viewportAround(framing.lat, framing.lon, framing.scaleKm);
+  await renderOutputs(lastPlaces, vp);
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function useLocation(): void {
+  showError(null);
+  const btn = $<HTMLButtonElement>("geo");
+  if (!navigator.geolocation) {
+    showError(t("geoFailed"));
+    return;
+  }
+  btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      btn.disabled = false;
+      const place: Place = {
+        lat: pos.coords.latitude,
+        lon: pos.coords.longitude,
+        label: t("here"),
+      };
+      fields[1] = { query: "", place };
+      const scaleKm = SNAP_KM[Number($<HTMLInputElement>("scale").value)];
+      const vp = viewportAround(place.lat, place.lon, scaleKm);
+      showPreview([place], vp);
+      void renderOutputs([place], vp);
+    },
+    () => {
+      btn.disabled = false;
+      showError(t("geoFailed"));
+    },
+    { timeout: 10000 },
+  );
 }
 
 function openModal(canvas: HTMLCanvasElement, name: string): void {
@@ -344,13 +406,43 @@ function init(): void {
   void initPwa();
 
   const labels = $("scale-labels");
-  SNAP_KM.forEach((km) => {
+  SNAP_KM.forEach((km, i) => {
     const sp = document.createElement("span");
     sp.textContent = km < 1 ? `${km * 1000}m` : `${km}km`;
+    // Thumb-centre track: inset by half the thumb width (~8px) per end.
+    sp.style.left = `calc(8px + (100% - 16px) * ${i} / ${SNAP_KM.length - 1})`;
     labels.appendChild(sp);
   });
   updateScaleLabel();
-  $<HTMLInputElement>("scale").addEventListener("input", updateScaleLabel);
+  $<HTMLInputElement>("scale").addEventListener("input", () => {
+    updateScaleLabel();
+    if (!$("preview-section").hidden && preview) {
+      const idx = Number($<HTMLInputElement>("scale").value);
+      void preview.setScale(SNAP_KM[idx]);
+    }
+  });
+
+  preview = new Preview(
+    $<HTMLCanvasElement>("preview"),
+    $("preview-loading"),
+    (f) => {
+      const idx = (SNAP_KM as readonly number[]).indexOf(f.scaleKm);
+      if (idx >= 0) {
+        $<HTMLInputElement>("scale").value = String(idx);
+        updateScaleLabel();
+      }
+    },
+    () => showError(t("failedBoth")),
+  );
+  $<HTMLButtonElement>("render-framed").addEventListener("click", () => {
+    void renderFramed();
+  });
+  $<HTMLButtonElement>("geo").addEventListener("click", useLocation);
+  for (const id of ["place1", "place2"] as const) {
+    $<HTMLInputElement>(id).addEventListener("input", () => {
+      $("preview-section").hidden = true;
+    });
+  }
 
   $<HTMLButtonElement>("lang-toggle").addEventListener("click", () => {
     setLang(getLang() === "ja" ? "en" : "ja");

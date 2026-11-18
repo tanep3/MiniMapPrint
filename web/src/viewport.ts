@@ -21,8 +21,30 @@ export interface Viewport {
   expandedToKm: number | null;
 }
 
-export const SNAP_KM = [0.5, 1, 2, 3, 4, 5] as const;
+export const SNAP_KM = [0.1, 0.25, 0.5, 1, 2, 3, 4, 5] as const;
 export const MAX_KM = 20;
+
+/** Square viewport of exactly `km` around an explicit centre — the
+ *  manual framing committed from the preview (v0.4.0). */
+export function viewportAround(lat: number, lon: number, km: number): Viewport {
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  if (cosLat < 0.1) throw new Error("polar");
+  const latHalf = km / 2 / 111.32;
+  const lonHalf = km / 2 / (111.32 * cosLat);
+  return {
+    south: lat - latHalf,
+    west: lon - lonHalf,
+    north: lat + latHalf,
+    east: lon + lonHalf,
+    actualKm: km,
+    expandedToKm: null,
+  };
+}
+
+/** Centre point of a viewport. */
+export function viewportCenter(vp: Viewport): { lat: number; lon: number } {
+  return { lat: (vp.south + vp.north) / 2, lon: (vp.west + vp.east) / 2 };
+}
 
 export function computeViewport(places: Place[], scaleKm: number): Viewport {
   if (places.length < 1 || places.length > 2) throw new Error("places");

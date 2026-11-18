@@ -37,9 +37,11 @@
           </label>
           <div id="candidates2" class="candidates" hidden></div>
 
+          <button id="geo" class="geo-btn" type="button" data-i18n="useLocation">現在地を使う</button>
+
           <div class="field">
             <span data-i18n="scale">範囲（地図の一辺）</span>
-            <input id="scale" type="range" min="0" max="5" step="1" value="1" />
+            <input id="scale" type="range" min="0" max="7" step="1" value="3" />
             <div class="scale-labels" id="scale-labels"></div>
             <div class="scale-value" id="scale-value">1 km</div>
           </div>
@@ -55,6 +57,19 @@
           <button id="generate" class="generate" type="button" data-i18n="generate">地図をつくる</button>
           <p id="notice" class="notice" hidden></p>
           <p id="error" class="error" hidden></p>
+        </section>
+
+        <section id="preview-section" hidden>
+          <div class="result-card preview-card">
+            <span class="chip preview" data-i18n="previewTitle">原画で位置合わせ</span>
+            <div class="preview-wrap" id="preview-wrap">
+              <canvas id="preview" width="768" height="768" tabindex="0"></canvas>
+              <svg class="preview-pin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 1 1 0 5.5z" fill="#ff5c9e" stroke="#ffffff" stroke-width="1.2"/></svg>
+              <div id="preview-loading" class="preview-loading" hidden>…</div>
+            </div>
+            <p class="preview-hint" data-i18n="previewHint">ドラッグで移動、ピンチ／ホイール／Ctrl+± で拡大縮小できます</p>
+            <button id="render-framed" class="generate" type="button" data-i18n="renderFramed">この範囲で描画する</button>
+          </div>
         </section>
 
         <section id="result" hidden>
