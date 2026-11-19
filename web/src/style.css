@@ -170,14 +170,6 @@ footer a { color: var(--pink); }
   max-width: 100%; max-height: 76vh; background: #fff; border-radius: 8px;
   image-rendering: pixelated;
 }
-.name-label { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-weight: 700; font-size: 14px; color: var(--ink); text-align: left; }
-.name-input {
-  flex: 1; min-width: 0; font-size: 15px; padding: 8px 10px;
-  border: 2px solid #f3c6dd; border-radius: 12px; background: #fff;
-  color: var(--ink); outline: none;
-}
-.name-input:focus { border-color: var(--pink-soft); }
-
 .modal-actions { display: flex; gap: 8px; margin-top: 14px; }
 .modal-actions button {
   flex: 1; border: none; border-radius: 999px; padding: 12px 4px;

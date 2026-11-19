@@ -21,8 +21,7 @@ import {
   shareCanvas,
   saveCanvas,
   printCanvas,
-  defaultSaveName,
-  resolveSaveName,
+  nextSaveName,
 } from "./export";
 import { initPwa } from "./pwa";
 
@@ -50,7 +49,6 @@ let lastPlaces: Place[] = [];
 let preview: Preview | null = null;
 let modalCanvas: HTMLCanvasElement | null = null;
 let modalBase = "minimapprint";
-let modalEdited = false;
 
 function scaleLabel(idx: number): string {
   const km = SNAP_KM[idx];
@@ -218,30 +216,8 @@ function makeCard(style: "line" | "gray"): {
     img.src = canvas.toDataURL("image/png");
     img.alt = style;
     const base = `minimapprint-${style}`;
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.className = "name-input";
-    nameInput.autocomplete = "off";
-    nameInput.spellcheck = false;
-    nameInput.value = defaultSaveName(base);
-    let nameEdited = false;
-    nameInput.addEventListener("input", () => {
-      nameEdited = true;
-    });
-    img.addEventListener("click", () =>
-      openModal(canvas, {
-        value: nameInput.value,
-        edited: nameEdited,
-        base,
-      }),
-    );
+    img.addEventListener("click", () => openModal(canvas, base));
     body.appendChild(img);
-    const nameLabel = document.createElement("label");
-    nameLabel.className = "name-label";
-    const nameSpan = document.createElement("span");
-    nameSpan.textContent = t("fileName");
-    nameLabel.append(nameSpan, nameInput);
-    body.appendChild(nameLabel);
     const actions = document.createElement("div");
     actions.className = "actions";
     const mk = (label: string, fn: () => void) => {
@@ -255,13 +231,13 @@ function makeCard(style: "line" | "gray"): {
       mk(t("share"), () =>
         void shareCanvas(
           canvas,
-          resolveSaveName(nameInput, nameEdited, base),
+          nextSaveName(base),
         ).catch(() => {}),
       ),
     );
     actions.appendChild(
       mk(t("save"), () =>
-        void saveCanvas(canvas, resolveSaveName(nameInput, nameEdited, base)),
+        void saveCanvas(canvas, nextSaveName(base)),
       ),
     );
     actions.appendChild(mk(t("print"), () => printCanvas(canvas)));
@@ -477,14 +453,9 @@ function useLocation(): void {
   );
 }
 
-function openModal(
-  canvas: HTMLCanvasElement,
-  nameState: { value: string; edited: boolean; base: string },
-): void {
+function openModal(canvas: HTMLCanvasElement, base: string): void {
   modalCanvas = canvas;
-  modalBase = nameState.base;
-  modalEdited = nameState.edited;
-  $<HTMLInputElement>("modal-name").value = nameState.value;
+  modalBase = base;
   const img = $<HTMLImageElement>("modal-img");
   img.src = canvas.toDataURL("image/png");
   $("modal").hidden = false;
@@ -569,30 +540,12 @@ function init(): void {
   $("modal").addEventListener("click", (e) => {
     if (e.target === $("modal")) closeModal();
   });
-  $<HTMLInputElement>("modal-name").addEventListener("input", () => {
-    modalEdited = true;
-  });
   $<HTMLButtonElement>("modal-share").addEventListener("click", () => {
     if (modalCanvas)
-      void shareCanvas(
-        modalCanvas,
-        resolveSaveName(
-          $<HTMLInputElement>("modal-name"),
-          modalEdited,
-          modalBase,
-        ),
-      ).catch(() => {});
+      void shareCanvas(modalCanvas, nextSaveName(modalBase)).catch(() => {});
   });
   $<HTMLButtonElement>("modal-save").addEventListener("click", () => {
-    if (modalCanvas)
-      void saveCanvas(
-        modalCanvas,
-        resolveSaveName(
-          $<HTMLInputElement>("modal-name"),
-          modalEdited,
-          modalBase,
-        ),
-      );
+    if (modalCanvas) void saveCanvas(modalCanvas, nextSaveName(modalBase));
   });
   $<HTMLButtonElement>("modal-print").addEventListener("click", () => {
     if (modalCanvas) printCanvas(modalCanvas);
