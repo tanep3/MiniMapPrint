@@ -276,6 +276,69 @@ async function searchGsi(query: string): Promise<Candidate[] | null> {
   return candidates;
 }
 
+export type TownCheck = "ok" | "mismatch" | "unknown";
+
+/** Town name (町名) of a query: its locality minus prefecture and
+ *  municipality/ward, e.g. "入間市豊岡1-8-1" -> "豊岡". */
+function queryTown(query: string): string | null {
+  let s = stripPrefecture(localityOf(normalizeAddress(query)));
+  const ward = s.match(/^.+?区(.+)$/);
+  if (ward) s = ward[1];
+  else {
+    const city = s.match(/^.+?[市区町村](.+)$/);
+    if (city) s = city[1];
+  }
+  s = s.replace(/^大字/, "").replace(/^字/, "");
+  return s.length >= 2 ? s : null;
+}
+
+/**
+ * Cross-check a GSI point against OpenStreetMap: reverse-geocode the
+ * point and compare the district it lands in with the town the query
+ * names. GSI's dataset has blocks whose points sit in a neighbouring
+ * district (measured: a whole block displaced ~100 m), and the title's
+ * match level cannot reveal that — an independent source can. Only a
+ * positive disagreement is reported ("mismatch"); no district data or
+ * any failure stays "unknown" and changes nothing.
+ */
+export async function checkPointTown(
+  query: string,
+  lat: number,
+  lon: number,
+): Promise<TownCheck> {
+  if (!isAddressLike(query)) return "unknown";
+  const town = queryTown(query);
+  if (!town) return "unknown";
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&accept-language=ja`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!res.ok) return "unknown";
+    const j = (await res.json()) as {
+      address?: Record<string, string | undefined>;
+    };
+    const a = j.address ?? {};
+    const districts = [
+      a.neighbourhood,
+      a.quarter,
+      a.suburb,
+      a.city_district,
+      a.town,
+      a.village,
+    ]
+      .filter((x): x is string => !!x)
+      .map((x) => x.replace(/\d+丁目$/, ""));
+    if (districts.length === 0) return "unknown";
+    const hit = districts.some(
+      (d) => d === town || d.includes(town) || town.includes(d),
+    );
+    return hit ? "ok" : "mismatch";
+  } catch {
+    return "unknown";
+  }
+}
+
 function isAddressLike(query: string): boolean {
   return ADDRESS_LIKE.test(normalizeDigits(query));
 }

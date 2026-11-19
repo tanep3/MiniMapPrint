@@ -1,6 +1,6 @@
 import "./style.css";
 import { initI18n, setLang, getLang, t } from "./i18n";
-import { searchPlace, type Candidate } from "./geocode";
+import { searchPlace, checkPointTown, type Candidate } from "./geocode";
 import {
   computeViewport,
   projectLinear,
@@ -78,6 +78,18 @@ function showPrecisionNote(place: Place | null): void {
   } else {
     el.hidden = true;
   }
+}
+
+/** Bumped whenever the note's context changes, so a late cross-check
+ *  result for a stale place never resurfaces. */
+let noteRunId = 0;
+
+/** Stronger warning: the point reverse-geocodes (via OSM) into a
+ *  different district than the address names. */
+function showSuspectNote(): void {
+  const el = $("notice");
+  el.textContent = t("precision_suspect");
+  el.hidden = false;
 }
 
 function clearCandidates(which: 1 | 2): void {
@@ -323,6 +335,7 @@ function showPreview(places: Place[], vp: Viewport): void {
 async function generate(): Promise<void> {
   showError(null);
   showPrecisionNote(null);
+  noteRunId++;
   const btn = $<HTMLButtonElement>("generate");
   const q1 = $<HTMLInputElement>("place1").value.trim();
   if (!q1 && !fields[1].place) {
@@ -354,6 +367,16 @@ async function generate(): Promise<void> {
 
     const places = [fields[1].place!, ...(fields[2].place ? [fields[2].place] : [])];
     showPrecisionNote(places[0]);
+    if (places[0].precision !== undefined) {
+      // GSI point: cross-check its district against OSM (async; the
+      // level note above already covers the wait).
+      const id = noteRunId;
+      void checkPointTown(fields[1].query, places[0].lat, places[0].lon).then(
+        (r) => {
+          if (r === "mismatch" && id === noteRunId) showSuspectNote();
+        },
+      );
+    }
     const scaleKm = SNAP_KM[Number($<HTMLInputElement>("scale").value)];
     let vp: Viewport;
     try {
@@ -378,6 +401,7 @@ async function renderFramed(): Promise<void> {
   if (!framing || lastPlaces.length === 0) return;
   showError(null);
   showPrecisionNote(null); // the user framed this themselves
+  noteRunId++;
   const vp = viewportAround(framing.lat, framing.lon, framing.scaleKm);
   await renderOutputs(lastPlaces, vp);
   $("result").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -386,6 +410,7 @@ async function renderFramed(): Promise<void> {
 function useLocation(): void {
   showError(null);
   showPrecisionNote(null);
+  noteRunId++;
   const btn = $<HTMLButtonElement>("geo");
   if (!navigator.geolocation) {
     showError(t("geoFailed"));
@@ -469,6 +494,7 @@ function init(): void {
     $<HTMLInputElement>(id).addEventListener("input", () => {
       $("preview-section").hidden = true;
       showPrecisionNote(null);
+      noteRunId++;
       clearCandidates(which);
       // The resolved place belongs to the text it was resolved from; once
       // the text no longer matches, the place is stale and must not be
