@@ -65,6 +65,12 @@ function showError(msg: string | null): void {
   }
 }
 
+function clearCandidates(which: 1 | 2): void {
+  const box = $(`candidates${which}`);
+  box.hidden = true;
+  box.innerHTML = "";
+}
+
 function renderCandidates(
   which: 1 | 2,
   candidates: Candidate[],
@@ -86,8 +92,7 @@ function renderCandidates(
         query,
         place: { lat: c.lat, lon: c.lon, label: query },
       };
-      box.hidden = true;
-      box.innerHTML = "";
+      clearCandidates(which);
       void generate();
     });
     box.appendChild(btn);
@@ -102,6 +107,7 @@ async function resolveField(
   const query = input.value.trim();
   if (!query) return "ok";
   if (fields[which].query === query && fields[which].place) return "ok";
+  clearCandidates(which);
   const result = await searchPlace(query, getLang());
   if (result.status === "notfound") return "notfound";
   if (result.status === "ambiguous") {
@@ -438,11 +444,20 @@ function init(): void {
     void renderFramed();
   });
   $<HTMLButtonElement>("geo").addEventListener("click", useLocation);
-  for (const id of ["place1", "place2"] as const) {
+  (["place1", "place2"] as const).forEach((id, i) => {
+    const which = (i + 1) as 1 | 2;
     $<HTMLInputElement>(id).addEventListener("input", () => {
       $("preview-section").hidden = true;
+      clearCandidates(which);
+      // The resolved place belongs to the text it was resolved from; once
+      // the text no longer matches, the place is stale and must not be
+      // reused (e.g. generating with an emptied input).
+      const q = $<HTMLInputElement>(id).value.trim();
+      if (fields[which].place && fields[which].query !== q) {
+        fields[which] = { query: "", place: null };
+      }
     });
-  }
+  });
 
   $<HTMLButtonElement>("lang-toggle").addEventListener("click", () => {
     setLang(getLang() === "ja" ? "en" : "ja");
