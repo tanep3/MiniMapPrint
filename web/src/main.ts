@@ -17,7 +17,13 @@ import { fetchMosaic } from "./tiles";
 import { renderLine } from "./render_line";
 import { renderGray } from "./render_gray";
 import { compose, mapBox, type MapBox } from "./compose";
-import { shareCanvas, saveCanvas, printCanvas } from "./export";
+import {
+  shareCanvas,
+  saveCanvas,
+  printCanvas,
+  defaultSaveName,
+  resolveSaveName,
+} from "./export";
 import { initPwa } from "./pwa";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -43,7 +49,8 @@ let lastRun: RunContext | null = null;
 let lastPlaces: Place[] = [];
 let preview: Preview | null = null;
 let modalCanvas: HTMLCanvasElement | null = null;
-let modalName = "minimapprint.png";
+let modalBase = "minimapprint";
+let modalEdited = false;
 
 function scaleLabel(idx: number): string {
   const km = SNAP_KM[idx];
@@ -210,9 +217,31 @@ function makeCard(style: "line" | "gray"): {
     img.className = "map";
     img.src = canvas.toDataURL("image/png");
     img.alt = style;
-    const name = `minimapprint-${style}.png`;
-    img.addEventListener("click", () => openModal(canvas, name));
+    const base = `minimapprint-${style}`;
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "name-input";
+    nameInput.autocomplete = "off";
+    nameInput.spellcheck = false;
+    nameInput.value = defaultSaveName(base);
+    let nameEdited = false;
+    nameInput.addEventListener("input", () => {
+      nameEdited = true;
+    });
+    img.addEventListener("click", () =>
+      openModal(canvas, {
+        value: nameInput.value,
+        edited: nameEdited,
+        base,
+      }),
+    );
     body.appendChild(img);
+    const nameLabel = document.createElement("label");
+    nameLabel.className = "name-label";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = t("fileName");
+    nameLabel.append(nameSpan, nameInput);
+    body.appendChild(nameLabel);
     const actions = document.createElement("div");
     actions.className = "actions";
     const mk = (label: string, fn: () => void) => {
@@ -223,9 +252,18 @@ function makeCard(style: "line" | "gray"): {
       return b;
     };
     actions.appendChild(
-      mk(t("share"), () => void shareCanvas(canvas, name).catch(() => {})),
+      mk(t("share"), () =>
+        void shareCanvas(
+          canvas,
+          resolveSaveName(nameInput, nameEdited, base),
+        ).catch(() => {}),
+      ),
     );
-    actions.appendChild(mk(t("save"), () => void saveCanvas(canvas, name)));
+    actions.appendChild(
+      mk(t("save"), () =>
+        void saveCanvas(canvas, resolveSaveName(nameInput, nameEdited, base)),
+      ),
+    );
     actions.appendChild(mk(t("print"), () => printCanvas(canvas)));
     body.appendChild(actions);
   };
@@ -439,9 +477,14 @@ function useLocation(): void {
   );
 }
 
-function openModal(canvas: HTMLCanvasElement, name: string): void {
+function openModal(
+  canvas: HTMLCanvasElement,
+  nameState: { value: string; edited: boolean; base: string },
+): void {
   modalCanvas = canvas;
-  modalName = name;
+  modalBase = nameState.base;
+  modalEdited = nameState.edited;
+  $<HTMLInputElement>("modal-name").value = nameState.value;
   const img = $<HTMLImageElement>("modal-img");
   img.src = canvas.toDataURL("image/png");
   $("modal").hidden = false;
@@ -526,11 +569,30 @@ function init(): void {
   $("modal").addEventListener("click", (e) => {
     if (e.target === $("modal")) closeModal();
   });
+  $<HTMLInputElement>("modal-name").addEventListener("input", () => {
+    modalEdited = true;
+  });
   $<HTMLButtonElement>("modal-share").addEventListener("click", () => {
-    if (modalCanvas) void shareCanvas(modalCanvas, modalName).catch(() => {});
+    if (modalCanvas)
+      void shareCanvas(
+        modalCanvas,
+        resolveSaveName(
+          $<HTMLInputElement>("modal-name"),
+          modalEdited,
+          modalBase,
+        ),
+      ).catch(() => {});
   });
   $<HTMLButtonElement>("modal-save").addEventListener("click", () => {
-    if (modalCanvas) void saveCanvas(modalCanvas, modalName);
+    if (modalCanvas)
+      void saveCanvas(
+        modalCanvas,
+        resolveSaveName(
+          $<HTMLInputElement>("modal-name"),
+          modalEdited,
+          modalBase,
+        ),
+      );
   });
   $<HTMLButtonElement>("modal-print").addEventListener("click", () => {
     if (modalCanvas) printCanvas(modalCanvas);
