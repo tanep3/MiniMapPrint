@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.4.1",
+  "appVersion": "0.5.0",
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^5.6.0",
@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "dependencies": {
     "@mapbox/vector-tile": "^3.0.0",
     "pbf": "^3.3.0"
