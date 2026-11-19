@@ -24,12 +24,29 @@
 // - a result is "ambiguous" only when a similarly ranked alternative is
 //   more than 0.7 km away (nearby hits usually describe the same complex).
 
+import type { MatchPrecision } from "./viewport.ts";
+
 export interface Candidate {
   lat: number;
   lon: number;
   displayName: string;
   importance: number;
   type: string;
+  /** GSI only: how finely the returned title matched. The title level
+   *  does NOT guarantee the point's position: at "ban" a measured point
+   *  sat ~100 m off, in a neighbouring district. The UI warns whenever
+   *  the level is coarser than "go". */
+  precision?: MatchPrecision;
+}
+
+/** Finest address component present in a GSI title. */
+function gsiPrecision(title: string): MatchPrecision {
+  const t = normalizeAddress(title);
+  if (/\d+号/.test(t)) return "go";
+  if (/\d+番/.test(t)) return "ban";
+  if (/\d+丁目/.test(t)) return "chome";
+  if (/\d+$/.test(t)) return "ban"; // street-number (chiban) style title
+  return "area";
 }
 
 export type GeocodeResult =
@@ -252,6 +269,7 @@ async function searchGsi(query: string): Promise<Candidate[] | null> {
       displayName: title,
       importance: 1,
       type: "",
+      precision: gsiPrecision(title),
     });
     if (candidates.length >= 5) break;
   }

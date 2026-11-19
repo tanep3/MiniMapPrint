@@ -65,6 +65,21 @@ function showError(msg: string | null): void {
   }
 }
 
+/** Coarse GSI matches (block level or coarser) are representative points
+ *  that can sit ~100 m from the actual building — say so plainly, so
+ *  nobody trusts the pin blindly. Hidden for fine matches and once the
+ *  user has framed the map themselves. */
+function showPrecisionNote(place: Place | null): void {
+  const el = $("notice");
+  const p = place?.precision;
+  if (p === "ban" || p === "chome" || p === "area") {
+    el.textContent = t(`precision_${p}`);
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
 function clearCandidates(which: 1 | 2): void {
   const box = $(`candidates${which}`);
   box.hidden = true;
@@ -90,7 +105,7 @@ function renderCandidates(
     btn.addEventListener("click", () => {
       fields[which] = {
         query,
-        place: { lat: c.lat, lon: c.lon, label: query },
+        place: { lat: c.lat, lon: c.lon, label: query, precision: c.precision },
       };
       clearCandidates(which);
       void generate();
@@ -120,6 +135,7 @@ async function resolveField(
       lat: result.candidate.lat,
       lon: result.candidate.lon,
       label: query,
+      precision: result.candidate.precision,
     },
   };
   return "ok";
@@ -306,6 +322,7 @@ function showPreview(places: Place[], vp: Viewport): void {
 
 async function generate(): Promise<void> {
   showError(null);
+  showPrecisionNote(null);
   const btn = $<HTMLButtonElement>("generate");
   const q1 = $<HTMLInputElement>("place1").value.trim();
   if (!q1 && !fields[1].place) {
@@ -336,6 +353,7 @@ async function generate(): Promise<void> {
     }
 
     const places = [fields[1].place!, ...(fields[2].place ? [fields[2].place] : [])];
+    showPrecisionNote(places[0]);
     const scaleKm = SNAP_KM[Number($<HTMLInputElement>("scale").value)];
     let vp: Viewport;
     try {
@@ -359,6 +377,7 @@ async function renderFramed(): Promise<void> {
   const framing = preview?.getFraming();
   if (!framing || lastPlaces.length === 0) return;
   showError(null);
+  showPrecisionNote(null); // the user framed this themselves
   const vp = viewportAround(framing.lat, framing.lon, framing.scaleKm);
   await renderOutputs(lastPlaces, vp);
   $("result").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -366,6 +385,7 @@ async function renderFramed(): Promise<void> {
 
 function useLocation(): void {
   showError(null);
+  showPrecisionNote(null);
   const btn = $<HTMLButtonElement>("geo");
   if (!navigator.geolocation) {
     showError(t("geoFailed"));
@@ -448,6 +468,7 @@ function init(): void {
     const which = (i + 1) as 1 | 2;
     $<HTMLInputElement>(id).addEventListener("input", () => {
       $("preview-section").hidden = true;
+      showPrecisionNote(null);
       clearCandidates(which);
       // The resolved place belongs to the text it was resolved from; once
       // the text no longer matches, the place is stale and must not be

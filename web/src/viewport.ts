@@ -3,10 +3,15 @@
 // flat-earth 111.32 km per degree with cos(lat) correction, and the two
 // points must fit inside 75% of the side (12.5% margin on each side).
 
+/** How finely a geocoded address matched (GSI titles): go = house number,
+ *  ban = block/lot, chome = district, area = town name only. */
+export type MatchPrecision = "go" | "ban" | "chome" | "area";
+
 export interface Place {
   lat: number;
   lon: number;
   label: string;
+  precision?: MatchPrecision;
 }
 
 export interface Viewport {
