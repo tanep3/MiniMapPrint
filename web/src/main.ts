@@ -141,6 +141,12 @@ async function resolveField(
   if (fields[which].query === query && fields[which].place) return "ok";
   clearCandidates(which);
   const result = await searchPlace(query, getLang());
+  // The field may have been edited while the search was in flight
+  // (the edit already cleared the candidates and any stored place).
+  // A late result for the old text must not render candidates or
+  // store its place — drop it quietly and let the run stop as if
+  // still unresolved; the next Generate press resolves the new text.
+  if (input.value.trim() !== query) return "pending";
   if (result.status === "notfound") return "notfound";
   if (result.status === "ambiguous") {
     renderCandidates(which, result.candidates, query);
